@@ -14,6 +14,7 @@
   pkg-config,
   bison,
   which,
+  runCommand,
   blas,
   lapack,
   curl,
@@ -29,6 +30,26 @@
 
 assert (!blas.isILP64) && (!lapack.isILP64);
 
+let
+  # A stub toolchain. R records absolute paths to the compiler/archiver it was
+  # built with in `$out/lib/R/etc/Makeconf`, which would otherwise retain the
+  # full GCC (and binutils) in the runtime closure. We build with the real
+  # toolchain but rewrite those paths to point at these tiny no-op stubs, so the
+  # slim build does not depend on the real GCC at runtime. Compiling R packages
+  # from source is intentionally unsupported in this variant.
+  dummyToolchain = runCommand "r-slim-dummy-toolchain" { } ''
+    mkdir -p "$out/bin"
+    msg='This is a slim, toolchain-free R build; compiling code from source is not supported.'
+    for prog in cc gcc c++ g++ gfortran g77 ar ranlib ld nm; do
+      {
+        echo '#!/bin/sh'
+        echo "echo \"$msg\" >&2"
+        echo 'exit 1'
+      } > "$out/bin/$prog"
+      chmod +x "$out/bin/$prog"
+    done
+  '';
+in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "R";
   version = "4.6.0";
@@ -116,6 +137,16 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   # is compiled and compressed, which hides the store path.
   postFixup = ''
     echo ${which} > $out/nix-support/undetected-runtime-dependencies
+
+    # Repoint the recorded build toolchain at the stubs so the real GCC/binutils
+    # are dropped from the runtime closure (see dummyToolchain above).
+    substituteInPlace $out/lib/R/etc/Makeconf \
+      --replace-quiet "$(type -p gcc)" "${dummyToolchain}/bin/gcc" \
+      --replace-quiet "$(type -p g++)" "${dummyToolchain}/bin/g++" \
+      --replace-quiet "$(type -p ar)" "${dummyToolchain}/bin/ar" \
+      --replace-quiet "$(type -p ranlib)" "${dummyToolchain}/bin/ranlib" \
+      --replace-quiet "${gfortran}/bin/gfortran" "${dummyToolchain}/bin/gfortran"
+
     ${lib.optionalString stdenvNoCC.hostPlatform.isLinux ''find $out -name "*.so" -exec patchelf {} --add-rpath $out/lib/R/lib \;''}
   '';
 
