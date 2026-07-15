@@ -58,6 +58,9 @@ in
     name = "${stdenv.name}-no-cc";
     cc = null;
     hasCC = false;
+    # `allowedRequisites` includes the C compiler, which would make this stdenv
+    # depend on it at the derivation level even with `cc = null`.
+    allowedRequisites = null;
     # Darwin doesn’t need an SDK in `stdenvNoCC`.  Dropping it shrinks the closure
     # size down from ~1 GiB to ~83 MiB, which is a considerable reduction.
     ${if stdenv.hostPlatform.isDarwin then "extraBuildInputs" else null} = [ ];

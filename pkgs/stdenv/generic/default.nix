@@ -15,6 +15,16 @@ let
     assert args ? defaultConfig;
     makeDerivationFile args.defaultConfig;
 
+  # Turn a derivation into its outPath without a string context attached so
+  # that the requisite checks don't add derivation-level dependencies on the
+  # listed paths. See the corresponding helper in make-derivation.nix.
+  unsafeDerivationToUntrackedOutpath =
+    drv:
+    if lib.isDerivation drv && (!drv.__contentAddressed or false) then
+      builtins.unsafeDiscardStringContext drv.outPath
+    else
+      drv;
+
   defaultNativeBuildInputs0 = [
     ../../build-support/setup-hooks/no-broken-symlinks.sh
     ../../build-support/setup-hooks/audit-tmpdir.sh
@@ -115,12 +125,13 @@ let
     # The stdenv that we are producing.
     derivation {
       ${if allowedRequisites != null then "allowedRequisites" else null} =
-        allowedRequisites ++ defaultNativeBuildInputs ++ defaultBuildInputs;
+        map unsafeDerivationToUntrackedOutpath
+          (allowedRequisites ++ defaultNativeBuildInputs ++ defaultBuildInputs);
       ${if config.contentAddressedByDefault then "__contentAddressed" else null} = true;
       ${if config.contentAddressedByDefault then "outputHashAlgo" else null} = "sha256";
       ${if config.contentAddressedByDefault then "outputHashMode" else null} = "recursive";
       inherit name pname version;
-      inherit disallowedRequisites;
+      disallowedRequisites = map unsafeDerivationToUntrackedOutpath disallowedRequisites;
 
       # Nix itself uses the `system` field of a derivation to decide where to
       # build it. This is a bit confusing for cross compilation.
