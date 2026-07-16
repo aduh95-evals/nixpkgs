@@ -207,7 +207,7 @@ stdenv.mkDerivation (finalAttrs: {
   # search paths, and strip any residual paths recorded in compiled objects
   # (e.g. debug/.comment sections).
   + ''
-    compilers='cc|gcc|g\+\+|c\+\+|cpp|clang|clang\+\+|gccgo|gfortran|g77|ld|ld\.gold|ld\.bfd|ld\.lld'
+    compilers='cc|gcc|g\+\+|c\+\+|cpp|clang|clang\+\+|gccgo|gfortran|g77|ld|ld\.gold|ld\.bfd|ld\.lld|ar|ranlib|nm|as|strip|dsymutil|install_name_tool|libtool|lipo|otool'
     for f in \
       $out/lib/R/etc/Makeconf $out/lib/R/etc/Renviron \
       $out/lib/R/bin/R $out/bin/R \
@@ -226,7 +226,13 @@ stdenv.mkDerivation (finalAttrs: {
       substituteInPlace $out/lib/R/bin/libtool \
             --replace-fail "${stdenv.cc.cc}" "${lib.getLib stdenv.cc.cc}"''}
 
-    find $out -type f -name '*.${if stdenv.hostPlatform.isDarwin then "dylib" else "so"}' -exec \
+    # Neutralise any residual references that are not a plain /bin/<tool> path,
+    # e.g. the compiler resource dir baked into libtool's library search path.
+    for f in $out/lib/R/etc/Makeconf $out/lib/R/bin/libtool; do
+      [ -f "$f" ] && remove-references-to -t ${stdenv.cc} "$f"
+    done
+
+    find $out -type f \( -name '*.so' -o -name '*.dylib' \) -exec \
       remove-references-to -t ${stdenv.cc} -t ${stdenv.cc.cc} {} +
   '';
 

@@ -83,7 +83,7 @@ stdenv.mkDerivation (
           ln -s $out/nix-support/propagated-build-inputs $out/nix-support/propagated-user-env-packages
       fi
 
-      find $out -type f -name '*.${if stdenv.hostPlatform.isDarwin then "dylib" else "so"}' -exec \
+      find $out -type f \( -name '*.so' -o -name '*.dylib' \) -exec \
         remove-references-to -t ${stdenv.cc} -t ${stdenv.cc.cc} {} +
     ''
     + (attrs.postFixup or "");
