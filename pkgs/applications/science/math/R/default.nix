@@ -27,6 +27,7 @@
   pkg-config,
   bison,
   which,
+  removeReferencesTo,
   llvmPackages,
   jdk,
   blas,
@@ -69,6 +70,7 @@ stdenv.mkDerivation (finalAttrs: {
     pkg-config
     tzdata
     which
+    removeReferencesTo
   ]
   # TODO: Remove once #536365 reaches this branch
   ++ lib.optional stdenv.hostPlatform.isDarwin llvmPackages.lld;
@@ -195,7 +197,47 @@ stdenv.mkDerivation (finalAttrs: {
   postFixup = ''
     echo ${which} > $out/nix-support/undetected-runtime-dependencies
     ${lib.optionalString stdenv.hostPlatform.isLinux ''find $out -name "*.so" -exec patchelf {} --add-rpath $out/lib/R/lib \;''}
+  ''
+  # Keep the C/C++ compiler out of R's runtime closure (enforced by
+  # outputChecks.disallowedReferences below). R records the absolute path of the
+  # compiler it was built with in Makeconf (and a couple of launchers); rewrite
+  # those to bare command names so packages are compiled with the toolchain
+  # provided by their own build environment. Only the compiler's runtime
+  # libraries (…-lib) are needed at run time, so repoint the recorded library
+  # search paths, and strip any residual paths recorded in compiled objects
+  # (e.g. debug/.comment sections).
+  + ''
+    compilers='cc|gcc|g\+\+|c\+\+|cpp|clang|clang\+\+|gccgo|gfortran|g77|ld|ld\.gold|ld\.bfd|ld\.lld'
+    for f in \
+      $out/lib/R/etc/Makeconf $out/lib/R/etc/Renviron \
+      $out/lib/R/bin/R $out/bin/R \
+      $out/lib/R/bin/libtool $out/lib/R/bin/javareconf \
+    ; do
+      [ -f "$f" ] && sed -i -E "s#/nix/store/[a-z0-9]{32}-[^/ \"')]*/bin/($compilers)#\1#g" "$f"
+    done
+
+    substituteInPlace \
+        $out/lib/R/etc/Makeconf \
+        ${lib.optionalString (!stdenv.hostPlatform.isDarwin) "$out/lib/R/etc/ldpaths"} \
+        ${lib.optionalString (!stdenv.hostPlatform.isDarwin) "$out/lib/R/etc/ldtools"} \
+      --replace-fail "${gfortran.cc}"   "${lib.getLib gfortran.cc}"
+
+    ${lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
+      substituteInPlace $out/lib/R/bin/libtool \
+            --replace-fail "${stdenv.cc.cc}" "${lib.getLib stdenv.cc.cc}"''}
+
+    find $out -type f -name '*.${if stdenv.hostPlatform.isDarwin then "dylib" else "so"}' -exec \
+      remove-references-to -t ${stdenv.cc} -t ${stdenv.cc.cc} {} +
   '';
+
+  # Enforce that the compiler wrapper and the unwrapped compiler do not end up in
+  # R's runtime closure. On Linux the postFixup above scrubs the references that
+  # would otherwise pull them in.
+  __structuredAttrs = true;
+  outputChecks.out.disallowedReferences = [
+    stdenv.cc
+    stdenv.cc.cc
+  ];
 
   doCheck = true;
   preCheck = "export HOME=$TMPDIR; export TZ=CET; bin/Rscript -e 'sessionInfo()'";

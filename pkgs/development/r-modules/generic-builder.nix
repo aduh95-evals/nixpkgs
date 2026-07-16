@@ -7,6 +7,7 @@
   gettext,
   gfortran,
   libiconv,
+  removeReferencesTo,
 }:
 
 {
@@ -17,6 +18,8 @@
 
 stdenv.mkDerivation (
   {
+    __structuredAttrs = true;
+
     buildInputs =
       buildInputs
       ++ [
@@ -65,12 +68,6 @@ stdenv.mkDerivation (
       runHook postInstall
     '';
 
-    postFixup = ''
-      if test -e $out/nix-support/propagated-build-inputs; then
-          ln -s $out/nix-support/propagated-build-inputs $out/nix-support/propagated-user-env-packages
-      fi
-    '';
-
     checkPhase = ''
       # noop since R CMD INSTALL tests packages
     '';
@@ -78,5 +75,22 @@ stdenv.mkDerivation (
   // attrs
   // {
     name = "r-${attrs.name or "${attrs.pname}-${attrs.version}"}";
+
+    nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [ removeReferencesTo ];
+
+    postFixup = ''
+      if test -e $out/nix-support/propagated-build-inputs; then
+          ln -s $out/nix-support/propagated-build-inputs $out/nix-support/propagated-user-env-packages
+      fi
+
+      find $out -type f -name '*.${if stdenv.hostPlatform.isDarwin then "dylib" else "so"}' -exec \
+        remove-references-to -t ${stdenv.cc} -t ${stdenv.cc.cc} {} +
+    ''
+    + (attrs.postFixup or "");
+
+    outputChecks.out.disallowedReferences = [
+      stdenv.cc
+      stdenv.cc.cc
+    ];
   }
 )
