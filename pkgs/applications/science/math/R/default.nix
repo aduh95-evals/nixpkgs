@@ -219,7 +219,6 @@ stdenv.mkDerivation (finalAttrs: {
     substituteInPlace \
         $out/lib/R/etc/Makeconf \
         ${lib.optionalString (!stdenv.hostPlatform.isDarwin) "$out/lib/R/etc/ldpaths"} \
-        ${lib.optionalString (!stdenv.hostPlatform.isDarwin) "$out/lib/R/etc/ldtools"} \
       --replace-fail "${gfortran.cc}"   "${lib.getLib gfortran.cc}"
 
     ${lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
