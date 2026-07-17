@@ -216,6 +216,21 @@ stdenv.mkDerivation (finalAttrs: {
       [ -f "$f" ] && sed -i -E "s#/nix/store/[a-z0-9]{32}-[^/ \"')]*/bin/($compilers)#\1#g" "$f"
     done
 
+    ${lib.optionalString stdenv.hostPlatform.isDarwin ''
+      # On Darwin the toolchain is clang. After bare-naming, CC/CXX are plain
+      # `cc`/`c++`, which resolve via PATH to the gfortran cc-wrapper's GCC
+      # drivers in an R-package build env; GCC's libstdc++ headers are
+      # incompatible with the SDK libcxx (e.g. "'abort' has not been declared in
+      # 'std'"). Pin them to clang/clang++, which the gfortran wrapper does not
+      # provide (so PATH resolves to the real clang) and which are not store
+      # paths (so the disallowedReferences check still passes).
+      sed -i -E \
+        -e 's#^(CC = )cc([[:space:]]|$)#\1clang\2#' \
+        -e 's#^(OBJC = )cc([[:space:]]|$)#\1clang\2#' \
+        -e 's#^((CXX|CXX11|CXX14|CXX17|CXX20|CXX23|OBJCXX|CXXCPP) = )c\+\+#\1clang++#' \
+        $out/lib/R/etc/Makeconf
+    ''}
+
     substituteInPlace \
         $out/lib/R/etc/Makeconf \
         ${lib.optionalString (!stdenv.hostPlatform.isDarwin) "$out/lib/R/etc/ldpaths"} \
