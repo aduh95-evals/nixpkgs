@@ -231,12 +231,18 @@ stdenv.mkDerivation (finalAttrs: {
         $out/lib/R/etc/Makeconf
     ''}
 
-    substituteInPlace \
-        $out/lib/R/etc/Makeconf \
-        ${lib.optionalString (!stdenv.hostPlatform.isDarwin) "$out/lib/R/etc/ldpaths"} \
-      --replace-fail "${gfortran.cc}"   "${lib.getLib gfortran.cc}"
-
     ${lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
+      # On Linux gfortran.cc is the same derivation as stdenv.cc.cc (the full
+      # gcc), which the disallowedReferences check forbids, so repoint its
+      # recorded library search paths to the -lib output. This must NOT run on
+      # Darwin: there gfortran is a separate derivation from clang (so the check
+      # already passes) and its -lib output lacks lib/gcc/<triple>/<ver> and the
+      # libemutls_w/libheapt_w archives that Fortran packages link against.
+      substituteInPlace \
+          $out/lib/R/etc/Makeconf \
+          $out/lib/R/etc/ldpaths \
+        --replace-fail "${gfortran.cc}"   "${lib.getLib gfortran.cc}"
+
       # ldtools is only emitted on some platforms (e.g. x86_64-linux).
       if [ -f $out/lib/R/etc/ldtools ]; then
         substituteInPlace $out/lib/R/etc/ldtools \
