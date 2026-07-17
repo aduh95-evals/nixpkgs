@@ -222,6 +222,12 @@ stdenv.mkDerivation (finalAttrs: {
       --replace-fail "${gfortran.cc}"   "${lib.getLib gfortran.cc}"
 
     ${lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
+      # ldtools is only emitted on some platforms (e.g. x86_64-linux).
+      if [ -f $out/lib/R/etc/ldtools ]; then
+        substituteInPlace $out/lib/R/etc/ldtools \
+          --replace-fail "${gfortran.cc}" "${lib.getLib gfortran.cc}"
+      fi
+
       substituteInPlace $out/lib/R/bin/libtool \
             --replace-fail "${stdenv.cc.cc}" "${lib.getLib stdenv.cc.cc}"''}
 
