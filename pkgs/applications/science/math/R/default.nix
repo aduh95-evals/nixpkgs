@@ -227,7 +227,7 @@ stdenv.mkDerivation (finalAttrs: {
       sed -i -E \
         -e 's#^(CC = )cc([[:space:]]|$)#\1clang\2#' \
         -e 's#^(OBJC = )cc([[:space:]]|$)#\1clang\2#' \
-        -e 's#^((CXX|CXX11|CXX14|CXX17|CXX20|CXX23|OBJCXX|CXXCPP) = )c\+\+#\1clang++#' \
+        -e 's#^((CXX[0-9]*|OBJCXX|CXXCPP) = )c\+\+#\1clang++#' \
         $out/lib/R/etc/Makeconf
     ''}
 
