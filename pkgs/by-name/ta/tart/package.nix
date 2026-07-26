@@ -10,15 +10,14 @@
   enableSoftnet ? false,
   softnet,
   nix-update-script,
-  versionCheckHook,
 }:
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "tart";
-  version = "2.30.6";
+  version = "2.34.0";
 
   src = fetchurl {
     url = "https://github.com/cirruslabs/tart/releases/download/${finalAttrs.version}/tart.tar.gz";
-    hash = "sha256-wepqDaJp1oRjGqEVrXUM/JO5gfAKc12AUkZUbfwwdx0=";
+    hash = "sha256-yfFgn0lFJY7w7id91E3JcA1vBpeJoR5Dvn81sKZLMTU=";
   };
   sourceRoot = ".";
 
@@ -39,10 +38,22 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     runHook postInstall
   '';
 
-  nativeInstallCheckInputs = [
-    versionCheckHook
-  ];
+  # Verify the version without launching the installed binary. As of 2.34.0
+  # tart.app is shipped as a sealed, hardened-runtime bundle (it now carries a
+  # Contents/_CodeSignature resource seal). Executing such a bundle makes macOS
+  # set the `restricted` (SF_RESTRICTED) file flag on the app, which the Nix
+  # daemon cannot clear when registering the store path, failing with
+  # `clearing flags of path "...": Operation not permitted`. Running the check
+  # against the unpacked source keeps the flag off the store output.
   doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+
+    tart.app/Contents/MacOS/tart --version | grep -F "${finalAttrs.version}"
+
+    runHook postInstallCheck
+  '';
+
   passthru.updateScript = nix-update-script { };
 
   meta = {
