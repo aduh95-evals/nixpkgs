@@ -124,7 +124,14 @@ stdenv.mkDerivation (finalAttrs: {
         });
     };
 
-    updateScript = nix-update-script { };
+    # `--subpackage` also refreshes the hash of the examples source, which is
+    # fetched at the same tag as the SDK.
+    updateScript = nix-update-script {
+      extraArgs = [
+        "--subpackage"
+        "tests.examples"
+      ];
+    };
   };
 
   meta = {
