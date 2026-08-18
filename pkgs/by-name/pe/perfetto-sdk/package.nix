@@ -2,9 +2,14 @@
   lib,
   stdenv,
   fetchurl,
+  testers,
   unzip,
 }:
 
+let
+  inherit (stdenv.hostPlatform) isStatic isDarwin;
+  libName = "libperfetto" + (if isStatic then ".a" else stdenv.hostPlatform.extensions.sharedLibrary);
+in
 stdenv.mkDerivation (finalAttrs: {
   pname = "perfetto-sdk";
   version = "57.2";
@@ -21,11 +26,20 @@ stdenv.mkDerivation (finalAttrs: {
   strictDeps = true;
   sourceRoot = ".";
 
+  # The release artifact ships no build system, the amalgamated translation unit
+  # has to be compiled by hand.
   buildPhase = ''
     runHook preBuild
 
     $CXX $CXXFLAGS -std=c++17 -fPIC -O2 -c perfetto.cc -o perfetto.o
-    $AR rcs libperfetto.a perfetto.o
+    ${
+      if isStatic then
+        "$AR rcs libperfetto.a perfetto.o"
+      else if isDarwin then
+        "$CXX $CXXFLAGS $LDFLAGS -dynamiclib -install_name $out/lib/${libName} -o ${libName} perfetto.o"
+      else
+        "$CXX $CXXFLAGS $LDFLAGS -shared -Wl,-soname,${libName} -o ${libName} perfetto.o -lpthread"
+    }
 
     runHook postBuild
   '';
@@ -33,7 +47,7 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    install -Dm644 libperfetto.a $out/lib/libperfetto.a
+    install -Dm${if isStatic then "644" else "755"} ${libName} $out/lib/${libName}
     install -Dm644 perfetto.h $out/include/perfetto.h
 
     mkdir -p $out/lib/pkgconfig
@@ -43,6 +57,10 @@ stdenv.mkDerivation (finalAttrs: {
 
     runHook postInstall
   '';
+
+  passthru.tests.pkg-config = testers.hasPkgConfigModules {
+    package = finalAttrs.finalPackage;
+  };
 
   meta = {
     description = "Perfetto tracing SDK, the client library used to emit traces";
@@ -55,6 +73,7 @@ stdenv.mkDerivation (finalAttrs: {
     changelog = "https://github.com/google/perfetto/releases/tag/v${finalAttrs.version}";
     license = lib.licenses.asl20;
     maintainers = with lib.maintainers; [ aduh95 ];
+    pkgConfigModules = [ "perfetto" ];
     platforms = lib.platforms.unix;
   };
 })
