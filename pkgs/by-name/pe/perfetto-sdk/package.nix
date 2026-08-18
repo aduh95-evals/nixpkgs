@@ -7,15 +7,8 @@
 }:
 
 let
-  inherit (stdenv.hostPlatform) isStatic isDarwin isWindows;
-  libName =
-    if isStatic then
-      "libperfetto.a"
-    else if isWindows then
-      "perfetto.dll"
-    else
-      "libperfetto${stdenv.hostPlatform.extensions.sharedLibrary}";
-  privateLibs = if isWindows then "-lws2_32" else "-lpthread";
+  inherit (stdenv.hostPlatform) isStatic isDarwin;
+  libName = "libperfetto" + (if isStatic then ".a" else stdenv.hostPlatform.extensions.sharedLibrary);
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "perfetto-sdk";
@@ -41,13 +34,11 @@ stdenv.mkDerivation (finalAttrs: {
     $CXX $CXXFLAGS -std=c++17 -fPIC -O2 -c perfetto.cc -o perfetto.o
     ${
       if isStatic then
-        "$AR rcs ${libName} perfetto.o"
+        "$AR rcs libperfetto.a perfetto.o"
       else if isDarwin then
         "$CXX $CXXFLAGS $LDFLAGS -dynamiclib -install_name $out/lib/${libName} -o ${libName} perfetto.o"
-      else if isWindows then
-        "$CXX $CXXFLAGS $LDFLAGS -shared -Wl,--out-implib,libperfetto.dll.a -o ${libName} perfetto.o ${privateLibs}"
       else
-        "$CXX $CXXFLAGS $LDFLAGS -shared -Wl,-soname,${libName} -o ${libName} perfetto.o ${privateLibs}"
+        "$CXX $CXXFLAGS $LDFLAGS -shared -Wl,-soname,${libName} -o ${libName} perfetto.o -lpthread"
     }
 
     runHook postBuild
@@ -56,22 +47,13 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
+    install -Dm${if isStatic then "644" else "755"} ${libName} $out/lib/${libName}
     install -Dm644 perfetto.h $out/include/perfetto.h
-    ${
-      if isStatic then
-        "install -Dm644 ${libName} $out/lib/${libName}"
-      else if isWindows then
-        "install -Dm755 ${libName} $out/bin/${libName}\n"
-        + "    install -Dm644 libperfetto.dll.a $out/lib/libperfetto.dll.a"
-      else
-        "install -Dm755 ${libName} $out/lib/${libName}"
-    }
 
     mkdir -p $out/lib/pkgconfig
     substitute ${./perfetto.pc.in} $out/lib/pkgconfig/perfetto.pc \
       --subst-var out \
-      --subst-var-by version ${finalAttrs.version} \
-      --subst-var-by libsPrivate ${lib.escapeShellArg privateLibs}
+      --subst-var-by version ${finalAttrs.version}
 
     runHook postInstall
   '';
@@ -92,6 +74,6 @@ stdenv.mkDerivation (finalAttrs: {
     license = lib.licenses.asl20;
     maintainers = with lib.maintainers; [ aduh95 ];
     pkgConfigModules = [ "perfetto" ];
-    platforms = lib.platforms.all;
+    platforms = lib.platforms.unix;
   };
 })
