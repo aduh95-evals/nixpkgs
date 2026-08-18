@@ -89,6 +89,16 @@ stdenv.mkDerivation (finalAttrs: {
               find_package(PkgConfig REQUIRED)
               pkg_check_modules(PERFETTO REQUIRED IMPORTED_TARGET perfetto)
               add_library(perfetto ALIAS PkgConfig::PERFETTO)"
+
+            # The examples come with no install rules.
+            cat >> CMakeLists.txt <<'EOF'
+            install(TARGETS
+                      example
+                      example_console
+                      example_custom_data_source
+                      example_startup_trace
+                      example_system_wide)
+            EOF
           '';
 
           sourceRoot = "${src.name}/examples/sdk";
@@ -98,15 +108,6 @@ stdenv.mkDerivation (finalAttrs: {
             finalAttrs.finalPackage
             pkg-config
           ];
-
-          # The examples have no install rules.
-          installPhase = ''
-            runHook preInstall
-
-            find . -maxdepth 1 -type f -executable -exec install -Dt $out/bin {} +
-
-            runHook postInstall
-          '';
         });
     };
 
