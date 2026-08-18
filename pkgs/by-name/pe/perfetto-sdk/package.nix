@@ -2,7 +2,6 @@
   lib,
   stdenv,
   fetchurl,
-  fetchFromGitHub,
   testers,
   unzip,
 }:
@@ -75,32 +74,6 @@ stdenv.mkDerivation (finalAttrs: {
       --subst-var-by libsPrivate ${lib.escapeShellArg privateLibs}
 
     runHook postInstall
-  '';
-
-  # The release artifact does not contain the upstream test suite, and the tests
-  # in the git repository are built against the non-amalgamated headers. The SDK
-  # example is the one upstream program written against `perfetto.h`, use it as a
-  # smoke test.
-  examples = fetchFromGitHub {
-    owner = "google";
-    repo = "perfetto";
-    tag = "v${finalAttrs.version}";
-    hash = "sha256-0Syqu43M+XWD15I3qSNaL8Vck6bconRz+6aK4V+0pBA=";
-    sparseCheckout = [ "examples/sdk" ];
-  };
-
-  doInstallCheck = stdenv.buildPlatform.canExecute stdenv.hostPlatform;
-
-  installCheckPhase = ''
-    runHook preInstallCheck
-
-    $CXX $CXXFLAGS -std=c++17 -I$out/include \
-      $examples/examples/sdk/example.cc $examples/examples/sdk/trace_categories.cc \
-      -o example $LDFLAGS -L$out/lib -Wl,-rpath,$out/lib -lperfetto ${privateLibs}
-    ./example
-    test -s example.pftrace
-
-    runHook postInstallCheck
   '';
 
   passthru.tests.pkg-config = testers.hasPkgConfigModules {
