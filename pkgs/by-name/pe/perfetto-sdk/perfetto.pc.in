@@ -7,4 +7,4 @@ Description: Perfetto tracing SDK (amalgamated C++ distribution)
 Version: @version@
 Cflags: -I${includedir}
 Libs: -L${libdir} -lperfetto
-Libs.private: -lpthread
+Libs.private: @libsPrivate@
