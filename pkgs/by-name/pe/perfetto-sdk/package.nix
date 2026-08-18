@@ -1,18 +1,24 @@
 {
+  cmake,
   lib,
   stdenv,
   fetchurl,
+  fetchFromGitHub,
+  nix-update-script,
+  pkg-config,
   testers,
   unzip,
 }:
 
 let
   inherit (stdenv.hostPlatform) isStatic isDarwin;
-  libName = "libperfetto" + (if isStatic then ".a" else stdenv.hostPlatform.extensions.sharedLibrary);
+  libName = "libperfetto${if isStatic then ".a" else stdenv.hostPlatform.extensions.sharedLibrary}";
+
+  version = "57.2";
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "perfetto-sdk";
-  version = "57.2";
+  inherit version;
 
   # The amalgamated SDK sources (a single perfetto.cc / perfetto.h pair) are
   # published as a release artifact, they are not part of the git repository.
@@ -58,8 +64,53 @@ stdenv.mkDerivation (finalAttrs: {
     runHook postInstall
   '';
 
-  passthru.tests.pkg-config = testers.hasPkgConfigModules {
-    package = finalAttrs.finalPackage;
+  passthru = {
+    tests = {
+      pkg-config = testers.hasPkgConfigModules {
+        package = finalAttrs.finalPackage;
+      };
+
+      examples =
+        let
+          src = fetchFromGitHub {
+            owner = "google";
+            repo = "perfetto";
+            tag = "v${version}";
+            hash = "sha256-0Syqu43M+XWD15I3qSNaL8Vck6bconRz+6aK4V+0pBA=";
+            sparseCheckout = [ "examples/sdk" ];
+          };
+        in
+        (stdenv.mkDerivation {
+          pname = "perfetto-sdk-examples";
+          inherit version src;
+
+          postPatch = ''
+            substituteInPlace CMakeLists.txt --replace-fail "add_library(perfetto STATIC ../../sdk/perfetto.cc)" "
+              find_package(PkgConfig REQUIRED)
+              pkg_check_modules(PERFETTO REQUIRED IMPORTED_TARGET perfetto)
+              add_library(perfetto ALIAS PkgConfig::PERFETTO)"
+          '';
+
+          sourceRoot = "${src.name}/examples/sdk";
+
+          nativeBuildInputs = [
+            cmake
+            finalAttrs.finalPackage
+            pkg-config
+          ];
+
+          # The examples have no install rules.
+          installPhase = ''
+            runHook preInstall
+
+            find . -maxdepth 1 -type f -executable -exec install -Dt $out/bin {} +
+
+            runHook postInstall
+          '';
+        });
+    };
+
+    updateScript = nix-update-script { };
   };
 
   meta = {
