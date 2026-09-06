@@ -25,10 +25,38 @@
   ...
 }:
 
+let
+  # Libraries that get an output of their own, as output name -> CMake target
+  # (and pkg-config file). `utf8_range` also holds `libutf8_validity`, which
+  # shares its .pc file. `libprotobuf` and `libprotoc` stay in `lib`.
+  libraryOutputs = {
+    lite = "libprotobuf-lite";
+  }
+  // lib.optionalAttrs (lib.versionAtLeast version "22") {
+    utf8_range = "utf8_range";
+  }
+  // lib.optionalAttrs (lib.versionAtLeast version "27") {
+    upb = "libupb";
+  };
+
+  # CMake variable -> install directory, consumed by the patched install rules
+  # (which default to CMAKE_INSTALL_LIBDIR for targets not listed here).
+  libdirs = lib.mapAttrs' (
+    output: target: lib.nameValuePair "protobuf_INSTALL_LIBDIR_${target}" "${placeholder output}/lib"
+  ) libraryOutputs;
+in
+
 stdenv.mkDerivation (finalAttrs: {
   pname = "protobuf";
   inherit version;
   __structuredAttrs = true;
+
+  outputs = [
+    "out"
+    "lib"
+    "dev"
+  ]
+  ++ lib.attrNames libraryOutputs;
 
   src = fetchFromGitHub {
     owner = "protocolbuffers";
@@ -109,6 +137,33 @@ stdenv.mkDerivation (finalAttrs: {
     # Fix gcc15 build failures due to missing <cstring>
     + lib.optionalString ((lib.versions.major version) == "25") ''
       sed -i '1i #include <cstring>' third_party/utf8_range/utf8_validity.cc
+    ''
+    # Install each library into its own output (see `libraryOutputs`), so the
+    # exported CMake targets point at the right place from the start.
+    + ''
+      substituteInPlace cmake/install.cmake \
+        --replace-fail 'DESTINATION ''${CMAKE_INSTALL_LIBDIR} COMPONENT ''${_library}' \
+          'DESTINATION ''${protobuf_INSTALL_LIBDIR_''${_library}} COMPONENT ''${_library}'
+      sed -i '/install(TARGETS ''${_library} EXPORT protobuf-targets/i \
+        if(NOT DEFINED protobuf_INSTALL_LIBDIR_''${_library})\
+          set(protobuf_INSTALL_LIBDIR_''${_library} "''${CMAKE_INSTALL_LIBDIR}")\
+        endif()\
+        set_property(TARGET ''${_library} PROPERTY INSTALL_NAME_DIR "''${protobuf_INSTALL_LIBDIR_''${_library}}")' \
+        cmake/install.cmake
+      # upb.pc only exists from 29 on
+      for pc in protobuf-lite ${lib.optionalString (lib.versionAtLeast version "29") "upb"}; do
+        substituteInPlace cmake/$pc.pc.cmake \
+          --replace-fail 'libdir=@CMAKE_INSTALL_FULL_LIBDIR@' "libdir=@protobuf_INSTALL_LIBDIR_lib$pc@"
+      done
+    ''
+    + lib.optionalString (libraryOutputs ? utf8_range) ''
+      sed -i \
+        -e '/DESTINATION [$]{CMAKE_INSTALL_LIBDIR}$/s|[$]{CMAKE_INSTALL_LIBDIR}|''${protobuf_INSTALL_LIBDIR_utf8_range}|' \
+        -e '/install(TARGETS utf8_validity utf8_range/i \
+        set_property(TARGET utf8_validity utf8_range PROPERTY INSTALL_NAME_DIR "''${protobuf_INSTALL_LIBDIR_utf8_range}")' \
+        third_party/utf8_range/CMakeLists.txt
+      substituteInPlace third_party/utf8_range/cmake/utf8_range.pc.cmake \
+        --replace-fail 'libdir=@CMAKE_INSTALL_FULL_LIBDIR@' 'libdir=@protobuf_INSTALL_LIBDIR_utf8_range@'
     '';
 
   preHook = ''
@@ -148,7 +203,17 @@ stdenv.mkDerivation (finalAttrs: {
   ]
   ++ lib.optionals enableShared [
     (lib.cmakeBool "protobuf_BUILD_SHARED_LIBS" true)
-  ];
+  ]
+  ++ lib.mapAttrsToList lib.cmakeFeature libdirs;
+
+  # The multiple-outputs hook only adds an rpath for `$lib/lib`; the binaries
+  # and libraries also link against the libraries in the other outputs.
+  # Unused entries are removed by the shrink-rpath fixup.
+  preConfigure = ''
+    for output in ${lib.concatStringsSep " " (lib.attrNames libraryOutputs)}; do
+      export NIX_LDFLAGS+=" -rpath ''${!output}/lib"
+    done
+  '';
 
   doCheck =
     # Tests fail to build on 32-bit platforms; fixed in 22.x
