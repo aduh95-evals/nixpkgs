@@ -25,10 +25,36 @@
   ...
 }:
 
+let
+  # Maps each library output to the library it holds (the `lib` prefix and
+  # extension are stripped). Every library is moved into its own output and
+  # symlinked back into `$out/lib`, so `out` keeps referencing them all.
+  libraryFiles = {
+    libprotobuf = "protobuf";
+    libprotobuf_lite = "protobuf-lite";
+    libprotoc = "protoc";
+  }
+  // lib.optionalAttrs (lib.versionAtLeast version "22") {
+    libutf8_range = "utf8_range";
+    libutf8_validity = "utf8_validity";
+  }
+  // lib.optionalAttrs (lib.versionAtLeast version "27") {
+    libupb = "upb";
+  };
+in
+
 stdenv.mkDerivation (finalAttrs: {
   pname = "protobuf";
   inherit version;
   __structuredAttrs = true;
+
+  outputs = [
+    "out"
+    "bin"
+  ]
+  ++ lib.attrNames libraryFiles;
+
+  inherit libraryFiles;
 
   src = fetchFromGitHub {
     owner = "protocolbuffers";
@@ -114,9 +140,9 @@ stdenv.mkDerivation (finalAttrs: {
   preHook = ''
     export build_protobuf=${
       if (!stdenv.buildPlatform.canExecute stdenv.hostPlatform) then
-        buildPackages."protobuf_${lib.versions.major version}"
+        lib.getBin buildPackages."protobuf_${lib.versions.major version}"
       else
-        (placeholder "out")
+        (placeholder "bin")
     };
   '';
 
@@ -149,6 +175,65 @@ stdenv.mkDerivation (finalAttrs: {
   ++ lib.optionals enableShared [
     (lib.cmakeBool "protobuf_BUILD_SHARED_LIBS" true)
   ];
+
+  # The CMake hook already installs executables into `$bin/bin`. Move each
+  # library into its own output, and leave symlinks behind in `$out` so the
+  # CMake/pkg-config files (and anyone using `$out/lib` directly) keep working.
+  # The binaries were linked with an rpath pointing at `$out/lib`; that would
+  # make the lib/bin outputs reference `out`, which in turn references them
+  # through the symlinks. Nix rejects such reference cycles between outputs,
+  # so rewrite the rpaths to point at the real library outputs instead.
+  postInstall = ''
+    ln -s "$bin/bin" "$out/bin"
+
+    declare -A libraryOutputs
+    libDirs=()
+    for output in "''${!libraryFiles[@]}"; do
+      libraryOutputs[lib''${libraryFiles[$output]}]=$output
+      libDirs+=("''${!output}/lib")
+      mkdir -p "''${!output}/lib"
+      for f in "$out/lib/lib''${libraryFiles[$output]}".*; do
+        mv "$f" "''${!output}/lib/"
+        ln -s "''${!output}/lib/''${f##*/}" "$f"
+      done
+    done
+
+    outputFor() {
+      local name=''${1##*/}
+      local output=''${libraryOutputs[''${name%%.*}]}
+      echo "''${!output}"
+    }
+
+    while IFS= read -r -d "" f; do
+      if isELF "$f"; then
+        rpath=()
+        while IFS= read -r -d : entry; do
+          if [[ $entry == "$out/lib" ]]; then
+            rpath+=("''${libDirs[@]}")
+          elif [[ $entry != *"$out/lib"* ]]; then
+            rpath+=("$entry")
+          fi
+        done < <(printf '%s:' "$(patchelf --print-rpath "$f")")
+        patchelf --set-rpath "$(IFS=:; echo "''${rpath[*]}")" "$f"
+      elif isMachO "$f"; then
+        args=()
+        while IFS= read -r dep; do
+          args+=(-change "$dep" "$(outputFor "$dep")/lib/''${dep##*/}")
+        done < <(otool -L "$f" | awk -v out="$out/lib/" 'NR > 1 && index($1, out) == 1 { print $1 }')
+        id=$(otool -D "$f" | sed -n 2p)
+        if [[ $id == "$out/lib/"* ]]; then
+          args+=(-id "$(outputFor "$id")/lib/''${id##*/}")
+        fi
+        if otool -l "$f" | grep -A2 LC_RPATH | grep -q "path $out/lib "; then
+          args+=(-delete_rpath "$out/lib")
+          for dir in "''${libDirs[@]}"; do args+=(-add_rpath "$dir"); done
+        fi
+        if [[ ''${#args[@]} -gt 0 ]]; then
+          install_name_tool "''${args[@]}" "$f"
+        fi
+      fi
+    done < <(find "$bin" "''${libDirs[@]}" -type f -print0)
+  '';
 
   doCheck =
     # Tests fail to build on 32-bit platforms; fixed in 22.x
