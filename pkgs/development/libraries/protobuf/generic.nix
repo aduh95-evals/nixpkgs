@@ -26,21 +26,21 @@
 }:
 
 let
-  # Maps each library output to the library it holds (the `lib` prefix and
-  # extension are stripped). Every library is moved into its own output and
-  # symlinked back into `$out/lib`, so `out` keeps referencing them all.
-  libraryFiles = {
-    libprotobuf = "protobuf";
-    libprotobuf_lite = "protobuf-lite";
-    libprotoc = "protoc";
+  # Output name -> CMake target (and pkg-config file) whose libraries it holds.
+  # `libutf8_range` also holds `libutf8_validity`, which shares its .pc file.
+  libraryOutputs = {
+    libprotobuf = "libprotobuf";
+    libprotobuf_lite = "libprotobuf-lite";
+    libprotoc = "libprotoc";
   }
   // lib.optionalAttrs (lib.versionAtLeast version "22") {
     libutf8_range = "utf8_range";
-    libutf8_validity = "utf8_validity";
   }
   // lib.optionalAttrs (lib.versionAtLeast version "27") {
-    libupb = "upb";
+    libupb = "libupb";
   };
+
+  libdirFlag = output: "protobuf_INSTALL_LIBDIR_${libraryOutputs.${output}}";
 in
 
 stdenv.mkDerivation (finalAttrs: {
@@ -52,9 +52,7 @@ stdenv.mkDerivation (finalAttrs: {
     "out"
     "bin"
   ]
-  ++ lib.attrNames libraryFiles;
-
-  inherit libraryFiles;
+  ++ lib.attrNames libraryOutputs;
 
   src = fetchFromGitHub {
     owner = "protocolbuffers";
@@ -135,6 +133,30 @@ stdenv.mkDerivation (finalAttrs: {
     # Fix gcc15 build failures due to missing <cstring>
     + lib.optionalString ((lib.versions.major version) == "25") ''
       sed -i '1i #include <cstring>' third_party/utf8_range/utf8_validity.cc
+    ''
+    # Install each library into its own output (see `libraryOutputs`), so the
+    # exported CMake targets point at the right place from the start.
+    + ''
+      substituteInPlace cmake/install.cmake \
+        --replace-fail 'DESTINATION ''${CMAKE_INSTALL_LIBDIR} COMPONENT ''${_library}' \
+          'DESTINATION ''${protobuf_INSTALL_LIBDIR_''${_library}} COMPONENT ''${_library}'
+      sed -i '/install(TARGETS ''${_library} EXPORT protobuf-targets/i \
+        set_property(TARGET ''${_library} PROPERTY INSTALL_NAME_DIR "''${protobuf_INSTALL_LIBDIR_''${_library}}")' \
+        cmake/install.cmake
+      # upb.pc only exists from 29 on
+      for pc in protobuf protobuf-lite ${lib.optionalString (lib.versionAtLeast version "29") "upb"}; do
+        substituteInPlace cmake/$pc.pc.cmake \
+          --replace-fail 'libdir=@CMAKE_INSTALL_FULL_LIBDIR@' "libdir=@protobuf_INSTALL_LIBDIR_lib$pc@"
+      done
+    ''
+    + lib.optionalString (libraryOutputs ? libutf8_range) ''
+      sed -i \
+        -e '/DESTINATION [$]{CMAKE_INSTALL_LIBDIR}$/s|[$]{CMAKE_INSTALL_LIBDIR}|''${protobuf_INSTALL_LIBDIR_utf8_range}|' \
+        -e '/install(TARGETS utf8_validity utf8_range/i \
+        set_property(TARGET utf8_validity utf8_range PROPERTY INSTALL_NAME_DIR "''${protobuf_INSTALL_LIBDIR_utf8_range}")' \
+        third_party/utf8_range/CMakeLists.txt
+      substituteInPlace third_party/utf8_range/cmake/utf8_range.pc.cmake \
+        --replace-fail 'libdir=@CMAKE_INSTALL_FULL_LIBDIR@' 'libdir=@protobuf_INSTALL_LIBDIR_utf8_range@'
     '';
 
   preHook = ''
@@ -174,65 +196,38 @@ stdenv.mkDerivation (finalAttrs: {
   ]
   ++ lib.optionals enableShared [
     (lib.cmakeBool "protobuf_BUILD_SHARED_LIBS" true)
-  ];
+  ]
+  ++ [
+    # Upstream sets INSTALL_RPATH relative to CMAKE_INSTALL_LIBDIR, which
+    # would point back at `$out`; the rpaths are set through NIX_LDFLAGS below.
+    (lib.cmakeBool "CMAKE_SKIP_INSTALL_RPATH" true)
+  ]
+  ++ lib.mapAttrsToList (
+    output: _: lib.cmakeFeature (libdirFlag output) "${placeholder output}/lib"
+  ) libraryOutputs;
 
-  # The CMake hook already installs executables into `$bin/bin`. Move each
-  # library into its own output, and leave symlinks behind in `$out` so the
-  # CMake/pkg-config files (and anyone using `$out/lib` directly) keep working.
-  # The binaries were linked with an rpath pointing at `$out/lib`; that would
-  # make the lib/bin outputs reference `out`, which in turn references them
-  # through the symlinks. Nix rejects such reference cycles between outputs,
-  # so rewrite the rpaths to point at the real library outputs instead.
+  # Nothing is installed in `$out/lib` besides symlinks, so don't let the
+  # linker wrapper add an rpath to it: `out` refers to every other output and
+  # the reverse reference would form a cycle. Point at the real library
+  # outputs instead; unused entries are removed by the shrink-rpath fixup.
+  env = {
+    NIX_NO_SELF_RPATH = "1";
+  }
+  // lib.optionalAttrs (lib.versions.major version == "29") {
+    GTEST_DEATH_TEST_STYLE = "threadsafe";
+  };
+  preConfigure = ''
+    for output in ${lib.concatStringsSep " " (lib.attrNames libraryOutputs)}; do
+      export NIX_LDFLAGS+=" -rpath ''${!output}/lib"
+    done
+  '';
+
+  # Keep `$out/{bin,lib}` populated with symlinks for backwards compatibility.
   postInstall = ''
     ln -s "$bin/bin" "$out/bin"
-
-    declare -A libraryOutputs
-    libDirs=()
-    for output in "''${!libraryFiles[@]}"; do
-      libraryOutputs[lib''${libraryFiles[$output]}]=$output
-      libDirs+=("''${!output}/lib")
-      mkdir -p "''${!output}/lib"
-      for f in "$out/lib/lib''${libraryFiles[$output]}".*; do
-        mv "$f" "''${!output}/lib/"
-        ln -s "''${!output}/lib/''${f##*/}" "$f"
-      done
+    for output in ${lib.concatStringsSep " " (lib.attrNames libraryOutputs)}; do
+      ln -s "''${!output}"/lib/* "$out/lib/"
     done
-
-    outputFor() {
-      local name=''${1##*/}
-      local output=''${libraryOutputs[''${name%%.*}]}
-      echo "''${!output}"
-    }
-
-    while IFS= read -r -d "" f; do
-      if isELF "$f"; then
-        rpath=()
-        while IFS= read -r -d : entry; do
-          if [[ $entry == "$out/lib" ]]; then
-            rpath+=("''${libDirs[@]}")
-          elif [[ $entry != *"$out/lib"* ]]; then
-            rpath+=("$entry")
-          fi
-        done < <(printf '%s:' "$(patchelf --print-rpath "$f")")
-        patchelf --set-rpath "$(IFS=:; echo "''${rpath[*]}")" "$f"
-      elif isMachO "$f"; then
-        args=()
-        while IFS= read -r dep; do
-          args+=(-change "$dep" "$(outputFor "$dep")/lib/''${dep##*/}")
-        done < <(otool -L "$f" | awk -v out="$out/lib/" 'NR > 1 && index($1, out) == 1 { print $1 }')
-        id=$(otool -D "$f" | sed -n 2p)
-        if [[ $id == "$out/lib/"* ]]; then
-          args+=(-id "$(outputFor "$id")/lib/''${id##*/}")
-        fi
-        if otool -l "$f" | grep -A2 LC_RPATH | grep -q "path $out/lib "; then
-          args+=(-delete_rpath "$out/lib")
-          for dir in "''${libDirs[@]}"; do args+=(-add_rpath "$dir"); done
-        fi
-        if [[ ''${#args[@]} -gt 0 ]]; then
-          install_name_tool "''${args[@]}" "$f"
-        fi
-      fi
-    done < <(find "$bin" "''${libDirs[@]}" -type f -print0)
   '';
 
   doCheck =
@@ -246,10 +241,6 @@ stdenv.mkDerivation (finalAttrs: {
     versionCheckHook
   ];
   doInstallCheck = true;
-
-  env = lib.optionalAttrs (lib.versions.major version == "29") {
-    GTEST_DEATH_TEST_STYLE = "threadsafe";
-  };
 
   passthru = {
     tests = {
