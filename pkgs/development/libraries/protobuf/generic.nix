@@ -39,12 +39,9 @@ let
     upb = "libupb";
   };
 
-  # CMake variable -> install directory, consumed by the patched install rules.
-  libdirs = {
-    protobuf_INSTALL_LIBDIR_libprotobuf = "${placeholder "lib"}/lib";
-    protobuf_INSTALL_LIBDIR_libprotoc = "${placeholder "lib"}/lib";
-  }
-  // lib.mapAttrs' (
+  # CMake variable -> install directory, consumed by the patched install rules
+  # (which default to CMAKE_INSTALL_LIBDIR for targets not listed here).
+  libdirs = lib.mapAttrs' (
     output: target: lib.nameValuePair "protobuf_INSTALL_LIBDIR_${target}" "${placeholder output}/lib"
   ) libraryOutputs;
 in
@@ -148,10 +145,13 @@ stdenv.mkDerivation (finalAttrs: {
         --replace-fail 'DESTINATION ''${CMAKE_INSTALL_LIBDIR} COMPONENT ''${_library}' \
           'DESTINATION ''${protobuf_INSTALL_LIBDIR_''${_library}} COMPONENT ''${_library}'
       sed -i '/install(TARGETS ''${_library} EXPORT protobuf-targets/i \
+        if(NOT DEFINED protobuf_INSTALL_LIBDIR_''${_library})\
+          set(protobuf_INSTALL_LIBDIR_''${_library} "''${CMAKE_INSTALL_LIBDIR}")\
+        endif()\
         set_property(TARGET ''${_library} PROPERTY INSTALL_NAME_DIR "''${protobuf_INSTALL_LIBDIR_''${_library}}")' \
         cmake/install.cmake
       # upb.pc only exists from 29 on
-      for pc in protobuf protobuf-lite ${lib.optionalString (lib.versionAtLeast version "29") "upb"}; do
+      for pc in protobuf-lite ${lib.optionalString (lib.versionAtLeast version "29") "upb"}; do
         substituteInPlace cmake/$pc.pc.cmake \
           --replace-fail 'libdir=@CMAKE_INSTALL_FULL_LIBDIR@' "libdir=@protobuf_INSTALL_LIBDIR_lib$pc@"
       done
