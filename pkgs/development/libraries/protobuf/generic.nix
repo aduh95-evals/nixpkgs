@@ -26,21 +26,27 @@
 }:
 
 let
-  # Output name -> CMake target (and pkg-config file) whose libraries it holds.
-  # `libutf8_range` also holds `libutf8_validity`, which shares its .pc file.
+  # Libraries that get an output of their own, as output name -> CMake target
+  # (and pkg-config file). `utf8_range` also holds `libutf8_validity`, which
+  # shares its .pc file. `libprotobuf` and `libprotoc` stay in `lib`.
   libraryOutputs = {
-    libprotobuf = "libprotobuf";
-    libprotobuf_lite = "libprotobuf-lite";
-    libprotoc = "libprotoc";
+    lite = "libprotobuf-lite";
   }
   // lib.optionalAttrs (lib.versionAtLeast version "22") {
-    libutf8_range = "utf8_range";
+    utf8_range = "utf8_range";
   }
   // lib.optionalAttrs (lib.versionAtLeast version "27") {
-    libupb = "libupb";
+    upb = "libupb";
   };
 
-  libdirFlag = output: "protobuf_INSTALL_LIBDIR_${libraryOutputs.${output}}";
+  # CMake variable -> install directory, consumed by the patched install rules.
+  libdirs = {
+    protobuf_INSTALL_LIBDIR_libprotobuf = "${placeholder "lib"}/lib";
+    protobuf_INSTALL_LIBDIR_libprotoc = "${placeholder "lib"}/lib";
+  }
+  // lib.mapAttrs' (
+    output: target: lib.nameValuePair "protobuf_INSTALL_LIBDIR_${target}" "${placeholder output}/lib"
+  ) libraryOutputs;
 in
 
 stdenv.mkDerivation (finalAttrs: {
@@ -50,7 +56,8 @@ stdenv.mkDerivation (finalAttrs: {
 
   outputs = [
     "out"
-    "bin"
+    "lib"
+    "dev"
   ]
   ++ lib.attrNames libraryOutputs;
 
@@ -149,7 +156,7 @@ stdenv.mkDerivation (finalAttrs: {
           --replace-fail 'libdir=@CMAKE_INSTALL_FULL_LIBDIR@' "libdir=@protobuf_INSTALL_LIBDIR_lib$pc@"
       done
     ''
-    + lib.optionalString (libraryOutputs ? libutf8_range) ''
+    + lib.optionalString (libraryOutputs ? utf8_range) ''
       sed -i \
         -e '/DESTINATION [$]{CMAKE_INSTALL_LIBDIR}$/s|[$]{CMAKE_INSTALL_LIBDIR}|''${protobuf_INSTALL_LIBDIR_utf8_range}|' \
         -e '/install(TARGETS utf8_validity utf8_range/i \
@@ -162,9 +169,9 @@ stdenv.mkDerivation (finalAttrs: {
   preHook = ''
     export build_protobuf=${
       if (!stdenv.buildPlatform.canExecute stdenv.hostPlatform) then
-        lib.getBin buildPackages."protobuf_${lib.versions.major version}"
+        buildPackages."protobuf_${lib.versions.major version}"
       else
-        (placeholder "bin")
+        (placeholder "out")
     };
   '';
 
@@ -197,36 +204,14 @@ stdenv.mkDerivation (finalAttrs: {
   ++ lib.optionals enableShared [
     (lib.cmakeBool "protobuf_BUILD_SHARED_LIBS" true)
   ]
-  ++ [
-    # Upstream sets INSTALL_RPATH relative to CMAKE_INSTALL_LIBDIR, which
-    # would point back at `$out`; the rpaths are set through NIX_LDFLAGS below.
-    (lib.cmakeBool "CMAKE_SKIP_INSTALL_RPATH" true)
-  ]
-  ++ lib.mapAttrsToList (
-    output: _: lib.cmakeFeature (libdirFlag output) "${placeholder output}/lib"
-  ) libraryOutputs;
+  ++ lib.mapAttrsToList lib.cmakeFeature libdirs;
 
-  # Nothing is installed in `$out/lib` besides symlinks, so don't let the
-  # linker wrapper add an rpath to it: `out` refers to every other output and
-  # the reverse reference would form a cycle. Point at the real library
-  # outputs instead; unused entries are removed by the shrink-rpath fixup.
-  env = {
-    NIX_NO_SELF_RPATH = "1";
-  }
-  // lib.optionalAttrs (lib.versions.major version == "29") {
-    GTEST_DEATH_TEST_STYLE = "threadsafe";
-  };
+  # The multiple-outputs hook only adds an rpath for `$lib/lib`; the binaries
+  # and libraries also link against the libraries in the other outputs.
+  # Unused entries are removed by the shrink-rpath fixup.
   preConfigure = ''
     for output in ${lib.concatStringsSep " " (lib.attrNames libraryOutputs)}; do
       export NIX_LDFLAGS+=" -rpath ''${!output}/lib"
-    done
-  '';
-
-  # Keep `$out/{bin,lib}` populated with symlinks for backwards compatibility.
-  postInstall = ''
-    ln -s "$bin/bin" "$out/bin"
-    for output in ${lib.concatStringsSep " " (lib.attrNames libraryOutputs)}; do
-      ln -s "''${!output}"/lib/* "$out/lib/"
     done
   '';
 
@@ -241,6 +226,10 @@ stdenv.mkDerivation (finalAttrs: {
     versionCheckHook
   ];
   doInstallCheck = true;
+
+  env = lib.optionalAttrs (lib.versions.major version == "29") {
+    GTEST_DEATH_TEST_STYLE = "threadsafe";
+  };
 
   passthru = {
     tests = {
