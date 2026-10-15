@@ -140,6 +140,11 @@ stdenv.mkDerivation (finalAttrs: {
 
     substituteInPlace gn/standalone/toolchain/BUILD.gn \
       --replace-fail 'default_output_extension = ".so"' 'default_output_extension = "${extensions.sharedLibrary}"'
+
+    # abseil-cpp pins its API to the C++ standard it was built with, which is C++20 when
+    # using the compiler's default with GCC >= 16; its headers then fail to compile as C++17.
+    substituteInPlace gn/standalone/BUILD.gn \
+      --replace-fail 'cflags_cc = [ "-std=c++17" ]' 'cflags_cc = [ "-std=c++20" ]'
   '';
 
   nativeBuildInputs = [
